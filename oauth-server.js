@@ -113,11 +113,10 @@ app.post('/api/notify-task-completed', async (req, res) => {
 // Start server only if not in Firebase Functions environment
 // Check multiple environment variables that Firebase Functions might set
 if (!process.env.FUNCTION_TARGET && !process.env.FUNCTION_NAME && !process.env.K_SERVICE && !process.env.GCLOUD_PROJECT) {
-  if (process.env.NODE_ENV !== 'production' || !process.env.FUNCTIONS_EMULATOR) {
-    app.listen(PORT, () => {
-      logger.info(`OAuth server listening on port ${PORT}`);
-    });
-  }
+  // Always start in Railway/local environments
+  app.listen(PORT, '0.0.0.0', () => {
+    logger.info(`OAuth server listening on port ${PORT}`);
+  });
 }
 
 module.exports = app;

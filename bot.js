@@ -499,7 +499,7 @@ client.on('interactionCreate', async (interaction) => {
   if (interaction.isButton()) {
     const customId = interaction.customId;
     if (customId && customId.startsWith('task_notify_consent_')) {
-      await handleTaskNotifyConsent(interaction, customId);
+      await handleTaskNotifyConsent(interaction);
       return;
     }
     return; // Ignore other button interactions
@@ -517,55 +517,92 @@ client.on('interactionCreate', async (interaction) => {
   });
   
   try {
+    let commandHandled = false;
+    
     // User commands
     if (commandName === 'link') {
       await handleLink(interaction);
+      commandHandled = true;
     } else if (commandName === 'oauth') {
       await handleOAuth(interaction);
+      commandHandled = true;
     } else if (commandName === 'credits') {
       await handleCredits(interaction);
+      commandHandled = true;
     } else if (commandName === 'redeem') {
       await handleRedeem(interaction);
+      commandHandled = true;
     } else if (commandName === 'rewards') {
       await handleRewards(interaction);
+      commandHandled = true;
     } else if (commandName === 'history') {
       await handleHistory(interaction);
+      commandHandled = true;
     } else if (commandName === 'unlink') {
       await handleUnlink(interaction);
+      commandHandled = true;
     } else if (commandName === 'refund') {
       await handleRefund(interaction);
+      commandHandled = true;
     } else if (commandName === 'converse') {
       await handleConverse(interaction);
+      commandHandled = true;
     } else if (commandName === 'timezone') {
       await handleTimezone(interaction);
+      commandHandled = true;
     } else if (commandName === 'task-notify') {
       await handleTaskNotify(interaction);
+      commandHandled = true;
     } else if (commandName === 'tasks') {
       await handleTasks(interaction);
+      commandHandled = true;
     } else if (commandName === 'task-create') {
       await handleTaskCreate(interaction);
+      commandHandled = true;
     } else if (commandName === 'stats') {
       await handleStats(interaction);
+      commandHandled = true;
     } else if (commandName === 'notifications') {
       await handleNotifications(interaction);
+      commandHandled = true;
     } else if (commandName === 'routines') {
       await handleRoutines(interaction);
+      commandHandled = true;
     } else if (commandName === 'search') {
       await handleSearch(interaction);
+      commandHandled = true;
     } else if (commandName === 'calendar') {
       await handleCalendar(interaction);
+      commandHandled = true;
     } else if (commandName === 'achievements') {
       await handleAchievements(interaction);
+      commandHandled = true;
     }
     // Admin commands
     else if (commandName === 'admin-credits') {
       await handleAdminCredits(interaction);
+      commandHandled = true;
     } else if (commandName === 'admin-link') {
       await handleAdminLink(interaction);
+      commandHandled = true;
     } else if (commandName === 'admin-redemptions') {
       await handleAdminRedemptions(interaction);
+      commandHandled = true;
     } else if (commandName === 'admin-stats') {
       await handleAdminStats(interaction);
+      commandHandled = true;
+    }
+    
+    // If command wasn't handled, send error response
+    if (!commandHandled) {
+      logger.warn('Unknown command received', { command: commandName });
+      if (!interaction.replied && !interaction.deferred) {
+        await interaction.reply({ 
+          content: '❌ Unknown command. Use `/help` to see available commands.', 
+          ephemeral: true 
+        });
+      }
+      return;
     }
     
     logger.logCommand(commandName, interaction.user.id, interaction.user.username, true);
@@ -579,10 +616,17 @@ client.on('interactionCreate', async (interaction) => {
     
     const errorMessage = '❌ An error occurred while processing your command. Please try again later.';
     
-    if (interaction.deferred) {
-      await interaction.editReply(errorMessage);
-    } else if (!interaction.replied) {
-      await interaction.reply({ content: errorMessage, ephemeral: true });
+    try {
+      if (interaction.deferred) {
+        await interaction.editReply(errorMessage);
+      } else if (!interaction.replied) {
+        await interaction.reply({ content: errorMessage, ephemeral: true });
+      }
+    } catch (replyError) {
+      logger.error('Failed to send error response', {
+        error: replyError.message,
+        originalError: error.message,
+      });
     }
   }
 });
@@ -1648,9 +1692,10 @@ async function handleTaskNotify(interaction) {
   }
 }
 
-async function handleTaskNotifyConsent(interaction, customId) {
+async function handleTaskNotifyConsent(interaction) {
   await interaction.deferReply({ ephemeral: true });
   
+  const customId = interaction.customId;
   const parts = customId.split('_');
   const consent = parts[3]; // 'yes' or 'no'
   const fromUserId = parts[4]; // Firebase UID
