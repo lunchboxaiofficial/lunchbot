@@ -23,107 +23,117 @@ async function sendDiscordDM(client, discordUserId, embed) {
 }
 
 /**
- * Check for tasks due in 1 hour and send notifications
+ * Check for tasks due soon and send notifications (including to watchers)
  */
-async function checkTasksDueInOneHour(client) {
+async function checkTasksDueSoon(client) {
   const db = initializeFirebase();
   
   try {
     const now = new Date();
-    const oneHourFromNow = new Date(now.getTime() + 60 * 60 * 1000); // 1 hour from now
     
-    // Query incomplete tasks with due dates
-    // Firestore doesn't support multiple range queries, so we'll filter in code
-    const tasksSnapshot = await db.collection('tasks')
-      .where('completed', '==', false)
-      .where('dueDate', '>=', now.toISOString())
-      .get();
+    // Check for tasks due in: 1hr 45min, 30min, 15min, 5min
+    const reminderIntervals = [105, 30, 15, 5]; // minutes before due
     
-    // Filter tasks due within 1 hour
-    const tasksDueInHour = tasksSnapshot.docs
-      .map(doc => ({ id: doc.id, ...doc.data() }))
-      .filter(task => {
-        if (!task.dueDate) return false;
-        const dueDate = new Date(task.dueDate);
-        return dueDate >= now && dueDate <= oneHourFromNow;
-      });
-    
-    if (tasksDueInHour.length === 0) {
-      return;
-    }
-    
-    // Group tasks by user
-    const tasksByUser = new Map();
-    
-    for (const task of tasksDueInHour) {
-      const userId = task.userId;
+    for (const minutesBefore of reminderIntervals) {
+      const targetTime = new Date(now.getTime() + minutesBefore * 60 * 1000);
+      const windowStart = new Date(targetTime.getTime() - 5 * 60 * 1000); // 5 min window
+      const windowEnd = new Date(targetTime.getTime() + 5 * 60 * 1000);
       
-      if (!tasksByUser.has(userId)) {
-        tasksByUser.set(userId, []);
-      }
-      tasksByUser.get(userId).push(task);
-    }
-    
-    // Get Discord links and send notifications
-    for (const [userId, tasks] of tasksByUser.entries()) {
-      const discordLinksSnapshot = await db.collection('discord_links')
-        .where('uid', '==', userId)
-        .limit(1)
+      const tasksSnapshot = await db.collection('tasks')
+        .where('completed', '==', false)
+        .where('dueDate', '>=', windowStart.toISOString())
+        .where('dueDate', '<=', windowEnd.toISOString())
         .get();
       
-      if (discordLinksSnapshot.empty) continue;
+      if (tasksSnapshot.empty) continue;
       
-      const discordLink = discordLinksSnapshot.docs[0].data();
-      const discordUserId = discordLink.discordId;
+      // Group tasks by user
+      const tasksByUser = new Map();
       
-      // Check if notification was already sent (prevent spam)
-      const lastNotified = tasks[0].lastUpcomingNotification || null;
-      const nowISO = now.toISOString();
+      tasksSnapshot.forEach((doc) => {
+        const task = { id: doc.id, ...doc.data() };
+        const userId = task.userId;
+        
+        if (!tasksByUser.has(userId)) {
+          tasksByUser.set(userId, []);
+        }
+        tasksByUser.get(userId).push(task);
+      });
       
-      // Only notify if we haven't notified in the last 30 minutes
-      if (lastNotified) {
-        const lastNotifiedDate = new Date(lastNotified);
-        const minutesSince = (now - lastNotifiedDate) / (1000 * 60);
-        if (minutesSince < 30) continue;
-      }
-      
-      // Create notification embed
-      const embed = new EmbedBuilder()
-        .setColor(0xFFA500)
-        .setTitle('⏰ Task Due Soon!')
-        .setDescription(`You have **${tasks.length}** task(s) due in the next hour:`)
-        .addFields(
-          tasks.map(task => ({
-            name: task.text,
-            value: `Due: ${new Date(task.dueDate).toLocaleString()}`,
-            inline: false,
-          }))
-        )
-        .setFooter({ text: 'Lunchbox AI Task Reminders' })
-        .setTimestamp();
-      
-      await sendDiscordDM(client, discordUserId, embed);
-      
-      // Mark as notified
-      for (const task of tasks) {
-        await db.collection('tasks').doc(task.id).update({
-          lastUpcomingNotification: nowISO,
-        }).catch((err) => {
-          logger.error('Failed to update lastUpcomingNotification', {
-            taskId: task.id,
-            error: err.message,
+      // Get Discord links and send notifications
+      for (const [userId, tasks] of tasksByUser.entries()) {
+        // Get task owner's Discord ID
+        const discordLinksSnapshot = await db.collection('discord_links')
+          .where('uid', '==', userId)
+          .limit(1)
+          .get();
+        
+        if (discordLinksSnapshot.empty) continue;
+        
+        const discordLink = discordLinksSnapshot.docs[0].data();
+        const ownerDiscordId = discordLink.discordId;
+        
+        // Get watchers for this user
+        const userSettingsDoc = await db.collection('user_settings').doc(userId).get();
+        const userSettings = userSettingsDoc.data() || {};
+        const watchers = userSettings.taskWatchers || [];
+        
+        // Get Discord IDs for watchers
+        const watcherDiscordIds = [];
+        for (const watcherUid of watchers) {
+          const watcherLinkSnapshot = await db.collection('discord_links')
+            .where('uid', '==', watcherUid)
+            .limit(1)
+            .get();
+          
+          if (!watcherLinkSnapshot.empty) {
+            const watcherLink = watcherLinkSnapshot.docs[0].data();
+            watcherDiscordIds.push(watcherLink.discordId);
+          }
+        }
+        
+        // Create notification embed
+        const embed = new EmbedBuilder()
+          .setColor(0xFFA500)
+          .setTitle(`⏰ Task Due in ${minutesBefore} Minutes!`)
+          .setDescription(`You have **${tasks.length}** task(s) due in ${minutesBefore} minutes:`)
+          .addFields(
+            tasks.map(task => ({
+              name: task.text,
+              value: `Due: ${new Date(task.dueDate).toLocaleString()}`,
+              inline: false,
+            }))
+          )
+          .setFooter({ text: 'Lunchbox AI Task Reminders' })
+          .setTimestamp();
+        
+        // Send to task owner
+        if (ownerDiscordId) {
+          await sendDiscordDM(client, ownerDiscordId, embed).catch(err => {
+            logger.error('Failed to send due soon notification to owner', {
+              userId,
+              ownerDiscordId,
+              error: err.message,
+            });
           });
-        });
+        }
+        
+        // Send to watchers
+        for (const watcherDiscordId of watcherDiscordIds) {
+          if (watcherDiscordId !== ownerDiscordId) {
+            await sendDiscordDM(client, watcherDiscordId, embed).catch(err => {
+              logger.error('Failed to send due soon notification to watcher', {
+                userId,
+                watcherDiscordId,
+                error: err.message,
+              });
+            });
+          }
+        }
       }
     }
-    
-    logger.info('Checked tasks due in 1 hour', {
-      tasksFound: tasksDueInHour.length,
-      usersNotified: tasksByUser.size,
-    });
-    
   } catch (error) {
-    logger.error('Error checking tasks due in 1 hour', {
+    logger.error('Error checking tasks due soon', {
       error: error.message,
       stack: error.stack,
     });
@@ -131,7 +141,7 @@ async function checkTasksDueInOneHour(client) {
 }
 
 /**
- * Check for overdue tasks and send notifications
+ * Check for overdue tasks and send notifications (including to watchers)
  */
 async function checkOverdueTasks(client) {
   const db = initializeFirebase();
@@ -139,235 +149,135 @@ async function checkOverdueTasks(client) {
   try {
     const now = new Date();
     
-    // Query overdue tasks
-    const tasksSnapshot = await db.collection('tasks')
-      .where('completed', '==', false)
-      .where('dueDate', '<', now.toISOString())
-      .get();
+    // Check for tasks overdue by: 15min, 30min, 1hr
+    const overdueIntervals = [15, 30, 60]; // minutes after due
     
-    if (tasksSnapshot.empty) {
-      return;
-    }
-    
-    // Group tasks by user
-    const tasksByUser = new Map();
-    
-    for (const doc of tasksSnapshot.docs) {
-      const task = doc.data();
-      const userId = task.userId;
+    for (const minutesOverdue of overdueIntervals) {
+      const targetTime = new Date(now.getTime() - minutesOverdue * 60 * 1000);
+      const windowStart = new Date(targetTime.getTime() - 5 * 60 * 1000); // 5 min window
+      const windowEnd = new Date(targetTime.getTime() + 5 * 60 * 1000);
       
-      // Check if overdue notification was already sent today
-      const lastOverdueNotification = task.lastOverdueNotification || null;
-      if (lastOverdueNotification) {
-        const lastDate = new Date(lastOverdueNotification);
-        const today = new Date();
-        // If notified today, skip
-        if (
-          lastDate.getDate() === today.getDate() &&
-          lastDate.getMonth() === today.getMonth() &&
-          lastDate.getFullYear() === today.getFullYear()
-        ) {
-          continue;
+      const tasksSnapshot = await db.collection('tasks')
+        .where('completed', '==', false)
+        .where('dueDate', '>=', windowStart.toISOString())
+        .where('dueDate', '<=', windowEnd.toISOString())
+        .get();
+      
+      if (tasksSnapshot.empty) continue;
+      
+      // Group tasks by user
+      const tasksByUser = new Map();
+      
+      tasksSnapshot.forEach((doc) => {
+        const task = { id: doc.id, ...doc.data() };
+        const userId = task.userId;
+        
+        if (!tasksByUser.has(userId)) {
+          tasksByUser.set(userId, []);
+        }
+        tasksByUser.get(userId).push(task);
+      });
+      
+      // Get Discord links and send notifications
+      for (const [userId, tasks] of tasksByUser.entries()) {
+        // Get task owner's Discord ID
+        const discordLinksSnapshot = await db.collection('discord_links')
+          .where('uid', '==', userId)
+          .limit(1)
+          .get();
+        
+        if (discordLinksSnapshot.empty) continue;
+        
+        const discordLink = discordLinksSnapshot.docs[0].data();
+        const ownerDiscordId = discordLink.discordId;
+        
+        // Get watchers for this user
+        const userSettingsDoc = await db.collection('user_settings').doc(userId).get();
+        const userSettings = userSettingsDoc.data() || {};
+        const watchers = userSettings.taskWatchers || [];
+        
+        // Get Discord IDs for watchers
+        const watcherDiscordIds = [];
+        for (const watcherUid of watchers) {
+          const watcherLinkSnapshot = await db.collection('discord_links')
+            .where('uid', '==', watcherUid)
+            .limit(1)
+            .get();
+          
+          if (!watcherLinkSnapshot.empty) {
+            const watcherLink = watcherLinkSnapshot.docs[0].data();
+            watcherDiscordIds.push(watcherLink.discordId);
+          }
+        }
+        
+        // Check if we already notified for this interval
+        const lastNotified = tasks[0].lastOverdueNotification || null;
+        if (lastNotified) {
+          const lastNotifiedDate = new Date(lastNotified);
+          const minutesSince = (now - lastNotifiedDate) / (1000 * 60);
+          // Only notify if we haven't notified in the last 10 minutes
+          if (minutesSince < 10) continue;
+        }
+        
+        // Create notification embed
+        const embed = new EmbedBuilder()
+          .setColor(0xFF0000)
+          .setTitle(`🚨 Task Overdue by ${minutesOverdue} Minutes!`)
+          .setDescription(`You have **${tasks.length}** overdue task(s):`)
+          .addFields(
+            tasks.map(task => {
+              const dueDate = new Date(task.dueDate);
+              const daysOverdue = Math.floor((now - dueDate) / (1000 * 60 * 60 * 24));
+              return {
+                name: task.text,
+                value: `Due: ${dueDate.toLocaleString()} (${daysOverdue} day${daysOverdue !== 1 ? 's' : ''} ago)`,
+                inline: false,
+              };
+            })
+          )
+          .setFooter({ text: 'Lunchbox AI Task Reminders' })
+          .setTimestamp();
+        
+        // Send to task owner
+        if (ownerDiscordId) {
+          await sendDiscordDM(client, ownerDiscordId, embed).catch(err => {
+            logger.error('Failed to send overdue notification to owner', {
+              userId,
+              ownerDiscordId,
+              error: err.message,
+            });
+          });
+        }
+        
+        // Send to watchers
+        for (const watcherDiscordId of watcherDiscordIds) {
+          if (watcherDiscordId !== ownerDiscordId) {
+            await sendDiscordDM(client, watcherDiscordId, embed).catch(err => {
+              logger.error('Failed to send overdue notification to watcher', {
+                userId,
+                watcherDiscordId,
+                error: err.message,
+              });
+            });
+          }
+        }
+        
+        // Mark as notified
+        const nowISO = now.toISOString();
+        for (const task of tasks) {
+          await db.collection('tasks').doc(task.id).update({
+            lastOverdueNotification: nowISO,
+          }).catch(err => {
+            logger.error('Failed to update lastOverdueNotification', {
+              taskId: task.id,
+              error: err.message,
+            });
+          });
         }
       }
-      
-      if (!tasksByUser.has(userId)) {
-        tasksByUser.set(userId, []);
-      }
-      tasksByUser.get(userId).push({ ...task, id: doc.id });
     }
-    
-    // Get Discord links and send notifications
-    for (const [userId, tasks] of tasksByUser.entries()) {
-      if (tasks.length === 0) continue;
-      
-      const discordLinksSnapshot = await db.collection('discord_links')
-        .where('uid', '==', userId)
-        .limit(1)
-        .get();
-      
-      if (discordLinksSnapshot.empty) continue;
-      
-      const discordLink = discordLinksSnapshot.docs[0].data();
-      const discordUserId = discordLink.discordId;
-      
-      // Create notification embed
-      const embed = new EmbedBuilder()
-        .setColor(0xFF0000)
-        .setTitle('🚨 Overdue Tasks!')
-        .setDescription(`You have **${tasks.length}** overdue task(s):`)
-        .addFields(
-          tasks.map(task => {
-            const dueDate = new Date(task.dueDate);
-            const daysOverdue = Math.floor((now - dueDate) / (1000 * 60 * 60 * 24));
-            return {
-              name: task.text,
-              value: `Due: ${dueDate.toLocaleString()} (${daysOverdue} day${daysOverdue !== 1 ? 's' : ''} ago)`,
-              inline: false,
-            };
-          })
-        )
-        .setFooter({ text: 'Lunchbox AI Task Reminders' })
-        .setTimestamp();
-      
-      await sendDiscordDM(client, discordUserId, embed);
-      
-      // Mark as notified
-      const nowISO = now.toISOString();
-      for (const task of tasks) {
-        await db.collection('tasks').doc(task.id).update({
-          lastOverdueNotification: nowISO,
-        }).catch(err => {
-          logger.error('Failed to update lastOverdueNotification', {
-            taskId: task.id,
-            error: err.message,
-          });
-        });
-      }
-    }
-    
-    logger.info('Checked overdue tasks', {
-      tasksFound: tasksSnapshot.size,
-      usersNotified: tasksByUser.size,
-    });
-    
   } catch (error) {
     logger.error('Error checking overdue tasks', {
-      error: error.message,
-      stack: error.stack,
-    });
-  }
-}
-
-/**
- * Send daily summary at 5 PM (user's timezone)
- */
-async function sendDailySummary(client) {
-  const db = initializeFirebase();
-  
-  try {
-    // Get all Discord links
-    const discordLinksSnapshot = await db.collection('discord_links').get();
-    
-    for (const linkDoc of discordLinksSnapshot.docs) {
-      const link = linkDoc.data();
-      const userId = link.uid;
-      const discordUserId = link.discordId;
-      
-      // Get user's timezone (use Firebase UID, not Discord ID)
-      const timezoneInfo = await getUserTimezone(userId);
-      if (!timezoneInfo) continue;
-      
-      // Check if it's 5 PM in user's timezone
-      const userTime = DateTime.now().setZone(timezoneInfo.timezone);
-      const hour = userTime.hour;
-      const minute = userTime.minute;
-      
-      // Only send if it's between 5:00 PM and 5:05 PM (to catch the cron window)
-      if (hour !== 17 || minute > 5) continue;
-      
-      // Check if summary was already sent today
-      const userSettingsDoc = await db.collection('user_settings').doc(userId).get();
-      const userSettings = userSettingsDoc.data() || {};
-      const lastSummaryDate = userSettings.lastSummaryDate || null;
-      
-      const today = userTime.toISODate();
-      if (lastSummaryDate === today) continue; // Already sent today
-      
-      // Get all user's tasks
-      const tasksSnapshot = await db.collection('tasks')
-        .where('userId', '==', userId)
-        .get();
-      
-      const allTasks = tasksSnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
-      
-      // Categorize tasks
-      const now = new Date();
-      const dueTasks = allTasks.filter(t => 
-        !t.completed && 
-        t.dueDate && 
-        new Date(t.dueDate) >= now &&
-        new Date(t.dueDate) <= new Date(now.getTime() + 7 * 24 * 60 * 60 * 1000) // Next 7 days
-      );
-      
-      const overdueTasks = allTasks.filter(t => 
-        !t.completed && 
-        t.dueDate && 
-        new Date(t.dueDate) < now
-      );
-      
-      const incompleteTasks = allTasks.filter(t => !t.completed);
-      const completedToday = allTasks.filter(t => {
-        if (!t.completed || !t.updatedAt) return false;
-        const updatedDate = new Date(t.updatedAt);
-        const today = new Date();
-        return (
-          updatedDate.getDate() === today.getDate() &&
-          updatedDate.getMonth() === today.getMonth() &&
-          updatedDate.getFullYear() === today.getFullYear()
-        );
-      });
-      
-      // Create summary embed
-      const embed = new EmbedBuilder()
-        .setColor(0x5865F2)
-        .setTitle('📊 Daily Task Summary')
-        .setDescription(`Here's your task overview for ${userTime.toFormat('EEEE, MMMM d, yyyy')}:`)
-        .addFields(
-          {
-            name: `✅ Completed Today (${completedToday.length})`,
-            value: completedToday.length > 0 
-              ? completedToday.slice(0, 5).map(t => `• ${t.text}`).join('\n') + (completedToday.length > 5 ? `\n*+${completedToday.length - 5} more*` : '')
-              : 'No tasks completed today',
-            inline: false,
-          },
-          {
-            name: `⏰ Due Soon (${dueTasks.length})`,
-            value: dueTasks.length > 0
-              ? dueTasks.slice(0, 5).map(t => {
-                  const dueDate = new Date(t.dueDate);
-                  return `• ${t.text} - ${dueDate.toLocaleDateString()}`;
-                }).join('\n') + (dueTasks.length > 5 ? `\n*+${dueTasks.length - 5} more*` : '')
-              : 'No tasks due soon',
-            inline: false,
-          },
-          {
-            name: `🚨 Overdue (${overdueTasks.length})`,
-            value: overdueTasks.length > 0
-              ? overdueTasks.slice(0, 5).map(t => `• ${t.text}`).join('\n') + (overdueTasks.length > 5 ? `\n*+${overdueTasks.length - 5} more*` : '')
-              : 'No overdue tasks',
-            inline: false,
-          },
-          {
-            name: `📋 Incomplete Tasks (${incompleteTasks.length})`,
-            value: incompleteTasks.length > 0
-              ? `You have ${incompleteTasks.length} task(s) still to complete`
-              : 'All tasks completed! 🎉',
-            inline: false,
-          }
-        )
-        .setFooter({ text: 'Lunchbox AI Daily Summary' })
-        .setTimestamp();
-      
-      await sendDiscordDM(client, discordUserId, embed);
-      
-      // Mark summary as sent
-      await db.collection('user_settings').doc(userId).set({
-        lastSummaryDate: today,
-      }, { merge: true });
-      
-      logger.info('Daily summary sent', {
-        userId,
-        discordUserId,
-        completedToday: completedToday.length,
-        dueTasks: dueTasks.length,
-        overdueTasks: overdueTasks.length,
-        incompleteTasks: incompleteTasks.length,
-      });
-    }
-    
-  } catch (error) {
-    logger.error('Error sending daily summary', {
       error: error.message,
       stack: error.stack,
     });
@@ -630,13 +540,148 @@ async function checkCompletedTasks(client, taskId = null) {
 }
 
 /**
+ * Send daily summary at 5 PM (user's timezone)
+ */
+async function sendDailySummary(client) {
+  const db = initializeFirebase();
+  
+  try {
+    // Get all Discord links
+    const discordLinksSnapshot = await db.collection('discord_links').get();
+    
+    for (const linkDoc of discordLinksSnapshot.docs) {
+      const link = linkDoc.data();
+      const userId = link.uid;
+      const discordUserId = link.discordId;
+      
+      // Get user's timezone (use Firebase UID, not Discord ID)
+      const timezoneInfo = await getUserTimezone(userId);
+      if (!timezoneInfo) continue;
+      
+      // Check if it's 5 PM in user's timezone
+      const userTime = DateTime.now().setZone(timezoneInfo.timezone);
+      const hour = userTime.hour;
+      const minute = userTime.minute;
+      
+      // Only send if it's between 5:00 PM and 5:05 PM (to catch the cron window)
+      if (hour !== 17 || minute > 5) continue;
+      
+      // Check if summary was already sent today
+      const userSettingsDoc = await db.collection('user_settings').doc(userId).get();
+      const userSettings = userSettingsDoc.data() || {};
+      const lastSummaryDate = userSettings.lastSummaryDate || null;
+      
+      const today = userTime.toISODate();
+      if (lastSummaryDate === today) continue; // Already sent today
+      
+      // Get all user's tasks
+      const tasksSnapshot = await db.collection('tasks')
+        .where('userId', '==', userId)
+        .get();
+      
+      const allTasks = tasksSnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+      
+      // Categorize tasks
+      const now = new Date();
+      const dueTasks = allTasks.filter(t => 
+        !t.completed && 
+        t.dueDate && 
+        new Date(t.dueDate) >= now &&
+        new Date(t.dueDate) <= new Date(now.getTime() + 7 * 24 * 60 * 60 * 1000) // Next 7 days
+      );
+      
+      const overdueTasks = allTasks.filter(t => 
+        !t.completed && 
+        t.dueDate && 
+        new Date(t.dueDate) < now
+      );
+      
+      const incompleteTasks = allTasks.filter(t => !t.completed);
+      const completedToday = allTasks.filter(t => {
+        if (!t.completed || !t.updatedAt) return false;
+        const updatedDate = new Date(t.updatedAt);
+        const today = new Date();
+        return (
+          updatedDate.getDate() === today.getDate() &&
+          updatedDate.getMonth() === today.getMonth() &&
+          updatedDate.getFullYear() === today.getFullYear()
+        );
+      });
+      
+      // Create summary embed
+      const embed = new EmbedBuilder()
+        .setColor(0x5865F2)
+        .setTitle('📊 Daily Task Summary')
+        .setDescription(`Here's your task overview for ${userTime.toFormat('EEEE, MMMM d, yyyy')}:`)
+        .addFields(
+          {
+            name: `✅ Completed Today (${completedToday.length})`,
+            value: completedToday.length > 0 
+              ? completedToday.slice(0, 5).map(t => `• ${t.text}`).join('\n') + (completedToday.length > 5 ? `\n*+${completedToday.length - 5} more*` : '')
+              : 'No tasks completed today',
+            inline: false,
+          },
+          {
+            name: `⏰ Due Soon (${dueTasks.length})`,
+            value: dueTasks.length > 0
+              ? dueTasks.slice(0, 5).map(t => {
+                  const dueDate = new Date(t.dueDate);
+                  return `• ${t.text} - ${dueDate.toLocaleDateString()}`;
+                }).join('\n') + (dueTasks.length > 5 ? `\n*+${dueTasks.length - 5} more*` : '')
+              : 'No tasks due soon',
+            inline: false,
+          },
+          {
+            name: `🚨 Overdue (${overdueTasks.length})`,
+            value: overdueTasks.length > 0
+              ? overdueTasks.slice(0, 5).map(t => `• ${t.text}`).join('\n') + (overdueTasks.length > 5 ? `\n*+${overdueTasks.length - 5} more*` : '')
+              : 'No overdue tasks',
+            inline: false,
+          },
+          {
+            name: `📋 Incomplete Tasks (${incompleteTasks.length})`,
+            value: incompleteTasks.length > 0
+              ? `You have ${incompleteTasks.length} task(s) still to complete`
+              : 'All tasks completed! 🎉',
+            inline: false,
+          }
+        )
+        .setFooter({ text: 'Lunchbox AI Daily Summary' })
+        .setTimestamp();
+      
+      await sendDiscordDM(client, discordUserId, embed);
+      
+      // Mark summary as sent
+      await db.collection('user_settings').doc(userId).set({
+        lastSummaryDate: today,
+      }, { merge: true });
+      
+      logger.info('Daily summary sent', {
+        userId,
+        discordUserId,
+        completedToday: completedToday.length,
+        dueTasks: dueTasks.length,
+        overdueTasks: overdueTasks.length,
+        incompleteTasks: incompleteTasks.length,
+      });
+    }
+    
+  } catch (error) {
+    logger.error('Error sending daily summary', {
+      error: error.message,
+      stack: error.stack,
+    });
+  }
+}
+
+/**
  * Run all notification checks
  */
 async function runNotificationChecks(client) {
   logger.info('Running notification checks...');
   
   await Promise.all([
-    checkTasksDueInOneHour(client),
+    checkTasksDueSoon(client),
     checkOverdueTasks(client),
     checkCompletedTasks(client),
     sendDailySummary(client),
@@ -646,7 +691,7 @@ async function runNotificationChecks(client) {
 }
 
 module.exports = {
-  checkTasksDueInOneHour,
+  checkTasksDueSoon,
   checkOverdueTasks,
   checkCompletedTasks,
   sendDailySummary,

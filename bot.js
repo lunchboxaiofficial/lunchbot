@@ -432,9 +432,9 @@ client.once('ready', async () => {
     // Check for upcoming/overdue tasks every 5 minutes
     setInterval(async () => {
       try {
-        const { checkTasksDueInOneHour, checkOverdueTasks } = require('./task-notifications');
+        const { checkTasksDueSoon, checkOverdueTasks } = require('./task-notifications');
         await Promise.all([
-          checkTasksDueInOneHour(client),
+          checkTasksDueSoon(client),
           checkOverdueTasks(client),
         ]);
         logger.debug('Cron: Upcoming/overdue tasks check finished');
