@@ -90,12 +90,9 @@ npm run bot:dev
 npm start
 ```
 
-### 4. Deploy to Firebase Functions
+### 4. Deploy to Railway
 
-```bash
-# From project root
-npm run bot:deploy
-```
+See [RAILWAY_DEPLOY.md](./RAILWAY_DEPLOY.md) for Railway deployment instructions.
 
 ## Bot Commands
 
@@ -150,7 +147,7 @@ discord-bot/
 ├── notifications.js      # Discord notifications and embeds
 ├── logger.js             # Structured logging
 ├── oauth-server.js       # Express server for OAuth callback
-├── index.js              # Firebase Functions entry point
+├── index.js              # Firebase Functions entry point (legacy)
 └── package.json          # Dependencies and scripts
 ```
 
@@ -191,11 +188,15 @@ LOG_LEVEL=DEBUG
 
 Check logs:
 - Local: Terminal output
-- Firebase: Firebase Console > Functions > Logs
+- Railway: Railway dashboard logs
 
 ## Deployment
 
-### Firebase Functions
+### Railway (Recommended)
+
+See [RAILWAY_DEPLOY.md](./RAILWAY_DEPLOY.md) for detailed Railway deployment instructions.
+
+### Firebase Functions (Legacy)
 
 ```bash
 # Deploy bot and OAuth server
@@ -203,19 +204,6 @@ npm run bot:deploy
 
 # Deploy Firestore rules
 firebase deploy --only firestore:rules
-```
-
-### Environment Variables in Firebase
-
-Set production environment variables:
-
-```bash
-firebase functions:config:set \
-  discord.bot_token="YOUR_BOT_TOKEN" \
-  discord.client_id="YOUR_CLIENT_ID" \
-  discord.client_secret="YOUR_CLIENT_SECRET" \
-  discord.guild_id="YOUR_GUILD_ID" \
-  admin.channel_id="YOUR_ADMIN_CHANNEL_ID"
 ```
 
 ## Troubleshooting
@@ -257,11 +245,10 @@ firebase functions:config:set \
 
 For issues or questions:
 1. Check bot logs for errors
-2. Review Firebase Console for issues
+2. Review Railway/Firebase Console for issues
 3. Test commands in a test server first
 4. Contact dev team in Lunchbox Discord
 
 ## License
 
 MIT
-
