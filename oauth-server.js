@@ -11,7 +11,8 @@ const { linkDiscordAccount, getUserByEmail } = require('./firebase-utils');
 const logger = require('./logger');
 
 const app = express();
-const PORT = process.env.OAUTH_PORT || 3001;
+// Use Railway's PORT if available, otherwise OAUTH_PORT, otherwise default to 3001
+const PORT = process.env.PORT || process.env.OAUTH_PORT || 3001;
 
 app.use(express.json());
 
