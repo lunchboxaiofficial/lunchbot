@@ -1805,10 +1805,19 @@ function startBot() {
 }
 
 // Auto-start bot if not in Firebase Functions environment
-// (for local development)
+// (for local development and Railway)
 // Check multiple environment variables that Firebase Functions might set
 if (!process.env.FUNCTION_TARGET && !process.env.FUNCTION_NAME && !process.env.K_SERVICE && !process.env.GCLOUD_PROJECT) {
   startBot();
+  
+  // Also start OAuth server for Railway/local deployment
+  // The oauth-server.js file will auto-start when required (checks same env vars)
+  try {
+    require('./oauth-server');
+    logger.info('OAuth server will start automatically');
+  } catch (error) {
+    logger.warn('Could not load OAuth server', { error: error.message });
+  }
 }
 
 process.on('uncaughtException', (error) => {
