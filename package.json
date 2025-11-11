@@ -1,0 +1,29 @@
+{
+  "name": "lunchbox-discord-bot",
+  "version": "1.0.0",
+  "description": "Discord bot for Lunchbox credit verification and reward redemption",
+  "main": "bot.js",
+  "scripts": {
+    "start": "node bot.js",
+    "dev": "node bot.js"
+  },
+  "keywords": [
+    "discord",
+    "bot",
+    "firebase",
+    "credits"
+  ],
+  "author": "Lunchbox",
+  "license": "MIT",
+  "dependencies": {
+    "axios": "^1.13.2",
+    "discord.js": "^14.14.1",
+    "dotenv": "^16.4.1",
+    "express": "^4.18.2",
+    "firebase-admin": "^12.0.0",
+    "luxon": "^3.7.2"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}
