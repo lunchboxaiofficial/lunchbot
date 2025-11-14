@@ -1220,8 +1220,22 @@ async function handleTimezone(interaction) {
         display: state.detectedTimezone.display,
       };
     } else {
-      // Read from Firebase
-      timezoneInfo = await getUserTimezone(interaction.user.id);
+      // Get Firebase UID from Discord link
+      const link = await getDiscordLink(interaction.user.id);
+      if (!link) {
+        const embed = new EmbedBuilder()
+          .setColor(0xFF6B6B)
+          .setTitle('❌ Account Not Linked')
+          .setDescription('You need to link your Discord account first!')
+          .addFields(
+            { name: 'Link Your Account', value: 'Use `/link` or `/oauth` to connect your account' }
+          );
+        
+        return await interaction.reply({ embeds: [embed], ephemeral: true });
+      }
+      
+      // Read from Firebase using Firebase UID
+      timezoneInfo = await getUserTimezone(link.uid);
     }
     
     if (!timezoneInfo) {
@@ -1249,6 +1263,20 @@ async function handleTimezone(interaction) {
     
     await interaction.reply({ embeds: [embed], ephemeral: true });
   } else if (action === 'change') {
+    // Get Firebase UID from Discord link
+    const link = await getDiscordLink(interaction.user.id);
+    if (!link) {
+      const embed = new EmbedBuilder()
+        .setColor(0xFF6B6B)
+        .setTitle('❌ Account Not Linked')
+        .setDescription('You need to link your Discord account first!')
+        .addFields(
+          { name: 'Link Your Account', value: 'Use `/link` or `/oauth` to connect your account' }
+        );
+      
+      return await interaction.reply({ embeds: [embed], ephemeral: true });
+    }
+    
     // Initiate timezone change
     const embed = new EmbedBuilder()
       .setColor(0x5865F2)
@@ -1261,13 +1289,16 @@ async function handleTimezone(interaction) {
     
     await interaction.reply({ embeds: [embed], ephemeral: true });
     
-    // Set timezone setup state
+    // Set timezone setup state with Firebase UID
     timezoneSetupState.set(interaction.user.id, {
       state: 'awaiting_time',
-      userId: interaction.user.id,
+      userId: link.uid, // Use Firebase UID, not Discord ID
     });
     
-    logger.info('Timezone change initiated', { userId: interaction.user.id });
+    logger.info('Timezone change initiated', { 
+      discordId: interaction.user.id,
+      userId: link.uid 
+    });
   }
 }
 
