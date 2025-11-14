@@ -2,7 +2,7 @@
 // Firebase Functions uses environment variables directly, not .env files
 if (!process.env.FUNCTION_TARGET && !process.env.FUNCTION_NAME && !process.env.K_SERVICE) {
   try {
-    require('dotenv').config();
+require('dotenv').config();
   } catch (e) {
     // dotenv might fail if .env doesn't exist - that's okay
   }
@@ -617,11 +617,11 @@ client.on('interactionCreate', async (interaction) => {
     const errorMessage = '❌ An error occurred while processing your command. Please try again later.';
     
     try {
-      if (interaction.deferred) {
-        await interaction.editReply(errorMessage);
-      } else if (!interaction.replied) {
-        await interaction.reply({ content: errorMessage, ephemeral: true });
-      }
+    if (interaction.deferred) {
+      await interaction.editReply(errorMessage);
+    } else if (!interaction.replied) {
+      await interaction.reply({ content: errorMessage, ephemeral: true });
+    }
     } catch (replyError) {
       logger.error('Failed to send error response', {
         error: replyError.message,
@@ -1836,10 +1836,10 @@ function startBot() {
   }
   
   botStarted = true;
-  client.login(process.env.DISCORD_BOT_TOKEN);
-  
-  // Error handlers
-  process.on('unhandledRejection', (error) => {
+client.login(process.env.DISCORD_BOT_TOKEN);
+
+// Error handlers
+process.on('unhandledRejection', (error) => {
     // Safely extract error info to prevent circular reference issues
     const errorInfo = {
       message: error && error.message ? String(error.message) : 'Unknown error',
