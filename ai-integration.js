@@ -10,32 +10,39 @@ const logger = require('./logger');
 const API_BASE_URL = process.env.API_BASE_URL || 'http://localhost:9002';
 
 /**
- * Call the AI chat API
+ * Call the AI chat API with support for images
  */
-async function callAI(history, taskContext = null) {
+async function callAI(history, taskContext = null, imageUrls = []) {
   try {
     logger.info('Calling AI API', {
       url: `${API_BASE_URL}/api/ai/chat`,
       messageCount: history.length,
-      hasTaskContext: !!taskContext
+      hasTaskContext: !!taskContext,
+      imageCount: imageUrls.length
     });
 
     const requestBody = {
       messages: history,
       activeTab: 'message',
-      advancedAI: false
+      advancedAI: false,
+      hasImages: imageUrls.length > 0
     };
     
     // Add task context if provided
     if (taskContext) {
       requestBody.taskContext = taskContext;
     }
+    
+    // Add image URLs if provided
+    if (imageUrls.length > 0) {
+      requestBody.imageUrls = imageUrls;
+    }
 
     const response = await axios.post(`${API_BASE_URL}/api/ai/chat`, requestBody, {
       headers: {
         'Content-Type': 'application/json'
       },
-      timeout: 30000 // 30 second timeout
+      timeout: 60000 // 60 second timeout for vision models
     });
     
     logger.info('AI API response received', {

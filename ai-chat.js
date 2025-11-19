@@ -1,8 +1,9 @@
 const { EmbedBuilder } = require('discord.js');
-const { getDiscordLink, getUserCredits, getUserTasks } = require('./firebase-utils');
+const { getDiscordLink, getUserCredits, getUserTasks, getUserRoutines, getUserStats, searchTasks, getUserNotificationSettings, updateUserNotificationSettings } = require('./firebase-utils');
 const { callAI } = require('./ai-integration');
 const logger = require('./logger');
 const { getUserTimezone, convertToUTC } = require('./timezone-utils');
+const { processNaturalLanguageCommand, checkAdminPermission, isSuperAdmin, grantAdminPermissions, revokeAdminPermissions } = require('./natural-language-processor');
 
 // Store conversation history per user
 const conversationHistory = new Map();
@@ -42,12 +43,16 @@ function clearHistory(userId) {
 }
 
 /**
- * Handle AI conversation
+ * Handle AI conversation with natural language command support
  */
 async function handleAIConversation(message, isPublic = false) {
   const userId = message.author.id;
   const username = message.author.username;
   const userMessage = message.content;
+  
+  // Check for images in message
+  const hasImages = message.attachments && message.attachments.size > 0;
+  const imageUrls = hasImages ? Array.from(message.attachments.values()).map(att => att.url) : [];
   
   try {
     // Check if account is linked
@@ -59,6 +64,31 @@ async function handleAIConversation(message, isPublic = false) {
       accountInfo = `\n\n**Account Linked:** ✅\n**Credits:** ${credits?.totalCredits || 0}`;
     } else {
       accountInfo = `\n\n**Account Linked:** ❌ (Use \`/link\` or \`/oauth\` to link your account for task management)`;
+    }
+    
+    // Process natural language command first
+    const commandResult = await processNaturalLanguageCommand(userMessage, userId, username, !!link);
+    
+    // Check if it's a direct command request (high confidence)
+    if (commandResult.confidence > 0.7) {
+      // Check admin permissions if needed
+      const permissionCheck = await checkAdminPermission(userId, username, commandResult.command);
+      
+      if (!permissionCheck.allowed) {
+        const embed = new EmbedBuilder()
+          .setColor(0xFF0000)
+          .setTitle('❌ Permission Denied')
+          .setDescription(permissionCheck.reason || 'You do not have permission to use this command.')
+          .setFooter({ text: 'Contact an admin if you need access' });
+        
+        return await message.reply({ embeds: [embed], allowedMentions: { repliedUser: false } });
+      }
+      
+      // Handle command directly
+      const commandHandled = await handleCommandDirectly(message, commandResult.command, link, userId, username, isPublic);
+      if (commandHandled) {
+        return; // Command was handled, don't continue with AI conversation
+      }
     }
     
     // Show typing indicator
@@ -116,8 +146,8 @@ async function handleAIConversation(message, isPublic = false) {
       taskCount: taskContext ? taskContext.split('\n').length : 0
     });
     
-    // Call AI with conversation history and task context
-    const responses = await callAI(history, taskContext);
+    // Call AI with conversation history, task context, and images
+    const responses = await callAI(history, taskContext, imageUrls);
     
     if (!responses || responses.length === 0) {
       throw new Error('No response from AI');
@@ -234,6 +264,368 @@ async function handleAIConversation(message, isPublic = false) {
       .setFooter({ text: 'If this persists, contact support' });
     
     await message.reply({ embeds: [errorEmbed], allowedMentions: { repliedUser: false } });
+  }
+}
+
+/**
+ * Handle commands directly (bypass AI conversation for high-confidence commands)
+ */
+async function handleCommandDirectly(message, command, link, userId, username, isPublic) {
+  if (!link && !command.startsWith('admin-')) {
+    const embed = new EmbedBuilder()
+      .setColor(0xFF6B6B)
+      .setTitle('🔗 Account Not Linked')
+      .setDescription('You need to link your Lunchbox account first!')
+      .addFields(
+        { name: 'How to Link', value: 'Use `/link` or `/oauth` command to connect your Discord to Lunchbox' }
+      );
+    
+    await message.reply({ embeds: [embed], allowedMentions: { repliedUser: false } });
+    return true;
+  }
+  
+  try {
+    switch (command) {
+      case 'tasks':
+        await handleTasksCommand(message, link.uid);
+        return true;
+      
+      case 'calendar':
+        await handleCalendarCommand(message, link.uid);
+        return true;
+      
+      case 'routines':
+        await handleRoutinesCommand(message, link.uid);
+        return true;
+      
+      case 'stats':
+        await handleStatsCommand(message, link.uid);
+        return true;
+      
+      case 'credits':
+        await handleCreditsCommand(message, link.uid);
+        return true;
+      
+      case 'rewards':
+        await handleRewardsCommand(message, link.uid);
+        return true;
+      
+      case 'achievements':
+        await handleAchievementsCommand(message, link.uid);
+        return true;
+      
+      case 'notifications':
+        await handleNotificationsCommand(message, link.uid);
+        return true;
+      
+      case 'search':
+        await handleSearchCommand(message, link.uid, message.content);
+        return true;
+      
+      // Admin commands
+      case 'admin-credits':
+      case 'admin-link':
+      case 'admin-stats':
+      case 'admin-redemptions':
+        // These will be handled by admin command handlers
+        return false; // Let it fall through to AI or admin handlers
+      
+      case 'grant-admin':
+      case 'revoke-admin':
+        await handleAdminPermissionCommand(message, command, userId, username);
+        return true;
+      
+      default:
+        return false; // Not handled, continue with AI
+    }
+  } catch (error) {
+    logger.error('Error handling command directly', {
+      error: error.message,
+      command,
+      userId,
+      username
+    });
+    return false; // Fall back to AI
+  }
+}
+
+/**
+ * Command handlers
+ */
+async function handleTasksCommand(message, uid) {
+  const tasks = await getUserTasks(uid, { limit: 20 });
+  
+  if (tasks.length === 0) {
+    const embed = new EmbedBuilder()
+      .setColor(0xFFA500)
+      .setTitle('📋 No Tasks Found')
+      .setDescription('You don\'t have any tasks yet.')
+      .setFooter({ text: 'Use "create task" or /task-create to add a new task' });
+    return await message.reply({ embeds: [embed] });
+  }
+  
+  const taskList = tasks.slice(0, 10).map((task, index) => {
+    const status = task.completed ? '✅' : '⏳';
+    const dueDate = task.dueDate ? new Date(task.dueDate.toDate ? task.dueDate.toDate() : task.dueDate).toLocaleDateString() : 'No due date';
+    return `${index + 1}. ${status} **${task.text}**\n   Due: ${dueDate}`;
+  }).join('\n\n');
+  
+  const embed = new EmbedBuilder()
+    .setColor(0x00FF00)
+    .setTitle('📋 Your Tasks')
+    .setDescription(taskList)
+    .setFooter({ text: `Showing ${Math.min(tasks.length, 10)} of ${tasks.length} task(s)` });
+  
+  await message.reply({ embeds: [embed] });
+}
+
+async function handleCalendarCommand(message, uid) {
+  const tasks = await getUserTasks(uid, { limit: 100 });
+  const today = new Date();
+  const weekStart = new Date(today);
+  weekStart.setDate(weekStart.getDate() - weekStart.getDay());
+  const weekEnd = new Date(weekStart);
+  weekEnd.setDate(weekEnd.getDate() + 6);
+  
+  const weekTasks = tasks.filter(task => {
+    if (!task.dueDate) return false;
+    const dueDate = task.dueDate.toDate ? task.dueDate.toDate() : new Date(task.dueDate);
+    return dueDate >= weekStart && dueDate <= weekEnd;
+  });
+  
+  if (weekTasks.length === 0) {
+    const embed = new EmbedBuilder()
+      .setColor(0xFFA500)
+      .setTitle('📅 Calendar (This Week)')
+      .setDescription('No tasks scheduled for this week.')
+      .setFooter({ text: weekStart.toLocaleDateString() + ' - ' + weekEnd.toLocaleDateString() });
+    return await message.reply({ embeds: [embed] });
+  }
+  
+  const taskList = weekTasks.map((task, index) => {
+    const status = task.completed ? '✅' : '⏳';
+    const dueDate = task.dueDate.toDate ? task.dueDate.toDate() : new Date(task.dueDate);
+    return `${index + 1}. ${status} **${task.text}**\n   ${dueDate.toLocaleDateString()} ${dueDate.toLocaleTimeString()}`;
+  }).join('\n\n');
+  
+  const embed = new EmbedBuilder()
+    .setColor(0x5865F2)
+    .setTitle('📅 Calendar (This Week)')
+    .setDescription(taskList)
+    .setFooter({ text: `Showing ${weekTasks.length} task(s) for this week` });
+  
+  await message.reply({ embeds: [embed] });
+}
+
+async function handleRoutinesCommand(message, uid) {
+  const routines = await getUserRoutines(uid);
+  
+  if (routines.length === 0) {
+    const embed = new EmbedBuilder()
+      .setColor(0xFFA500)
+      .setTitle('🔄 No Routines Found')
+      .setDescription('You don\'t have any routines yet.')
+      .setFooter({ text: 'Create routines in the Lunchbox app' });
+    return await message.reply({ embeds: [embed] });
+  }
+  
+  const routineList = routines.map((routine, index) => {
+    const status = routine.enabled !== false ? '✅' : '❌';
+    return `${index + 1}. ${status} **${routine.name}**`;
+  }).join('\n');
+  
+  const embed = new EmbedBuilder()
+    .setColor(0x00FF00)
+    .setTitle('🔄 Your Routines')
+    .setDescription(routineList)
+    .setFooter({ text: `Showing ${routines.length} routine(s)` });
+  
+  await message.reply({ embeds: [embed] });
+}
+
+async function handleStatsCommand(message, uid) {
+  const stats = await getUserStats(uid, 'all-time');
+  
+  const embed = new EmbedBuilder()
+    .setColor(0x5865F2)
+    .setTitle('📊 Productivity Statistics')
+    .addFields(
+      { name: 'Total Tasks', value: stats.totalTasks.toString(), inline: true },
+      { name: 'Completed', value: stats.completedTasks.toString(), inline: true },
+      { name: 'Pending', value: stats.pendingTasks.toString(), inline: true },
+      { name: 'Completion Rate', value: `${stats.completionRate}%`, inline: true }
+    )
+    .setFooter({ text: 'All-time statistics' });
+  
+  await message.reply({ embeds: [embed] });
+}
+
+async function handleCreditsCommand(message, uid) {
+  const credits = await getUserCredits(uid);
+  
+  const embed = new EmbedBuilder()
+    .setColor(0xFFD700)
+    .setTitle('💰 Your Credit Balance')
+    .addFields(
+      { name: 'Total Credits', value: `**${credits?.totalCredits || 0}** credits`, inline: true },
+      { name: 'Daily Streak', value: `${credits?.dailyStreak || 0} days 🔥`, inline: true }
+    )
+    .setFooter({ text: 'Use "rewards" to see available rewards' });
+  
+  await message.reply({ embeds: [embed] });
+}
+
+async function handleRewardsCommand(message, uid) {
+  const { formatRewardsEmbed } = require('./rewards');
+  const credits = await getUserCredits(uid);
+  const userCredits = credits?.totalCredits || 0;
+  
+  const embed = new EmbedBuilder()
+    .setColor(0x9B59B6)
+    .setTitle('🎁 Available Rewards')
+    .setDescription(`Your balance: **${userCredits} credits**\n\n✅ = You can afford | 🔒 = Not enough credits`)
+    .addFields(formatRewardsEmbed(userCredits))
+    .setFooter({ text: 'Use "redeem [reward name]" to claim a reward' });
+  
+  await message.reply({ embeds: [embed] });
+}
+
+async function handleAchievementsCommand(message, uid) {
+  const stats = await getUserStats(uid, 'all-time');
+  
+  const achievements = [
+    {
+      name: 'First Steps',
+      description: 'Complete your first task',
+      unlocked: stats.completedTasks >= 1,
+      icon: '🎯',
+    },
+    {
+      name: 'Task Master',
+      description: 'Complete 100 tasks',
+      unlocked: stats.completedTasks >= 100,
+      icon: '🏆',
+    },
+  ];
+  
+  const achievementList = achievements.map((ach, index) => {
+    const status = ach.unlocked ? '✅' : '🔒';
+    return `${index + 1}. ${status} ${ach.icon} **${ach.name}**\n   ${ach.description}`;
+  }).join('\n\n');
+  
+  const embed = new EmbedBuilder()
+    .setColor(0xFFD700)
+    .setTitle('🏆 Achievements')
+    .setDescription(achievementList)
+    .setFooter({ text: `${achievements.filter(a => a.unlocked).length}/${achievements.length} unlocked` });
+  
+  await message.reply({ embeds: [embed] });
+}
+
+async function handleNotificationsCommand(message, uid) {
+  const settings = await getUserNotificationSettings(uid);
+  
+  const embed = new EmbedBuilder()
+    .setColor(0x5865F2)
+    .setTitle('🔔 Notification Settings')
+    .addFields(
+      { name: 'Due Soon', value: settings.dueSoonEnabled ? '✅ Enabled' : '❌ Disabled', inline: true },
+      { name: 'Overdue', value: settings.overdueEnabled ? '✅ Enabled' : '❌ Disabled', inline: true },
+      { name: 'Daily Summary', value: settings.dailySummaryEnabled ? '✅ Enabled' : '❌ Disabled', inline: true }
+    )
+    .setFooter({ text: 'Manage settings in the Lunchbox app' });
+  
+  await message.reply({ embeds: [embed] });
+}
+
+async function handleSearchCommand(message, uid, query) {
+  // Extract search term from query (remove "search" keyword)
+  const searchTerm = query.replace(/^(search|find|look for)\s+/i, '').trim();
+  
+  if (!searchTerm) {
+    const embed = new EmbedBuilder()
+      .setColor(0xFFA500)
+      .setTitle('🔍 Search')
+      .setDescription('Please specify what to search for.\nExample: "search homework" or "find tasks about project"');
+    return await message.reply({ embeds: [embed] });
+  }
+  
+  const results = await searchTasks(uid, searchTerm, 10);
+  
+  if (results.length === 0) {
+    const embed = new EmbedBuilder()
+      .setColor(0xFFA500)
+      .setTitle('🔍 No Results Found')
+      .setDescription(`No tasks found matching "${searchTerm}"`);
+    return await message.reply({ embeds: [embed] });
+  }
+  
+  const resultList = results.map((task, index) => {
+    const status = task.completed ? '✅' : '⏳';
+    return `${index + 1}. ${status} **${task.text}**`;
+  }).join('\n');
+  
+  const embed = new EmbedBuilder()
+    .setColor(0x5865F2)
+    .setTitle(`🔍 Search Results: "${searchTerm}"`)
+    .setDescription(resultList)
+    .setFooter({ text: `Found ${results.length} task(s)` });
+  
+  await message.reply({ embeds: [embed] });
+}
+
+async function handleAdminPermissionCommand(message, command, userId, username) {
+  // Extract target user from message (could be mention or username)
+  const content = message.content;
+  const mentionMatch = content.match(/<@!?(\d+)>/);
+  const targetUserId = mentionMatch ? mentionMatch[1] : null;
+  
+  if (!targetUserId) {
+    const embed = new EmbedBuilder()
+      .setColor(0xFF0000)
+      .setTitle('❌ Invalid Command')
+      .setDescription('Please mention a user to grant/revoke admin permissions.\nExample: "grant admin @username"');
+    return await message.reply({ embeds: [embed] });
+  }
+  
+  try {
+    const targetUser = await message.client.users.fetch(targetUserId);
+    
+    if (command === 'grant-admin') {
+      await grantAdminPermissions(userId, username, targetUserId, targetUser.username);
+      
+      const embed = new EmbedBuilder()
+        .setColor(0x00FF00)
+        .setTitle('✅ Admin Permissions Granted')
+        .setDescription(`**${targetUser.username}** has been granted admin permissions.`)
+        .setFooter({ text: 'They can now use admin commands' });
+      
+      await message.reply({ embeds: [embed] });
+    } else if (command === 'revoke-admin') {
+      await revokeAdminPermissions(userId, username, targetUserId);
+      
+      const embed = new EmbedBuilder()
+        .setColor(0xFF6347)
+        .setTitle('🗑️ Admin Permissions Revoked')
+        .setDescription(`**${targetUser.username}**'s admin permissions have been revoked.`)
+        .setFooter({ text: 'They can no longer use admin commands' });
+      
+      await message.reply({ embeds: [embed] });
+    }
+  } catch (error) {
+    logger.error('Error handling admin permission command', {
+      error: error.message,
+      command,
+      userId,
+      targetUserId
+    });
+    
+    const embed = new EmbedBuilder()
+      .setColor(0xFF0000)
+      .setTitle('❌ Error')
+      .setDescription('Failed to process admin permission command. Please try again.');
+    
+    await message.reply({ embeds: [embed] });
   }
 }
 

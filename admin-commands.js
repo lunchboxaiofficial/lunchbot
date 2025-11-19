@@ -1,6 +1,7 @@
 const { SlashCommandBuilder, PermissionFlagsBits, EmbedBuilder } = require('discord.js');
 const { addCredits, getDiscordLink, linkDiscordAccount, getAllRedemptions, getServerStats, getUserByEmail } = require('./firebase-utils');
 const logger = require('./logger');
+const { checkAdminPermission, isSuperAdmin } = require('./natural-language-processor');
 
 const adminCommands = [
   // Admin: Manually adjust user credits
@@ -55,6 +56,14 @@ const adminCommands = [
 async function handleAdminCredits(interaction) {
   await interaction.deferReply({ ephemeral: true });
   
+  // Check admin permissions
+  const permissionCheck = await checkAdminPermission(interaction.user.id, interaction.user.username, 'admin-credits');
+  if (!permissionCheck.allowed) {
+    return await interaction.editReply({
+      content: `❌ ${permissionCheck.reason || 'You do not have permission to use this command.'}`
+    });
+  }
+  
   try {
     const targetUser = interaction.options.getUser('user');
     const amount = interaction.options.getInteger('amount');
@@ -100,6 +109,14 @@ async function handleAdminCredits(interaction) {
 
 async function handleAdminLink(interaction) {
   await interaction.deferReply({ ephemeral: true });
+  
+  // Check admin permissions
+  const permissionCheck = await checkAdminPermission(interaction.user.id, interaction.user.username, 'admin-link');
+  if (!permissionCheck.allowed) {
+    return await interaction.editReply({
+      content: `❌ ${permissionCheck.reason || 'You do not have permission to use this command.'}`
+    });
+  }
   
   try {
     const targetUser = interaction.options.getUser('user');
@@ -147,6 +164,14 @@ async function handleAdminLink(interaction) {
 async function handleAdminRedemptions(interaction) {
   await interaction.deferReply({ ephemeral: true });
   
+  // Check admin permissions
+  const permissionCheck = await checkAdminPermission(interaction.user.id, interaction.user.username, 'admin-redemptions');
+  if (!permissionCheck.allowed) {
+    return await interaction.editReply({
+      content: `❌ ${permissionCheck.reason || 'You do not have permission to use this command.'}`
+    });
+  }
+  
   try {
     const limit = interaction.options.getInteger('limit') || 10;
     const redemptions = await getAllRedemptions(limit);
@@ -181,6 +206,14 @@ async function handleAdminRedemptions(interaction) {
 
 async function handleAdminStats(interaction) {
   await interaction.deferReply({ ephemeral: true });
+  
+  // Check admin permissions
+  const permissionCheck = await checkAdminPermission(interaction.user.id, interaction.user.username, 'admin-stats');
+  if (!permissionCheck.allowed) {
+    return await interaction.editReply({
+      content: `❌ ${permissionCheck.reason || 'You do not have permission to use this command.'}`
+    });
+  }
   
   try {
     const stats = await getServerStats();
