@@ -287,6 +287,6 @@ module.exports = {
   getAdminPermissions,
   grantAdminPermissions,
   revokeAdminPermissions,
-  SUPER_ADMIN_ID,
+  SUPER_ADMIN_USERNAME,
 };
 
